@@ -1,0 +1,83 @@
+name: Deploy Frontend (ECS Blue/Green)
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy-frontend:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }} # ecommerce-frontend
+      CLUSTER_NAME: ${{ secrets.CLUSTER_NAME }}     # EcommerceCluster
+      SERVICE_NAME: ${{ secrets.SERVICE_NAME }}     # p.ej. InfraEcommerceStack-FrontendServiceXXXXX
+      CODEDEPLOY_APP: ${{ secrets.CODEDEPLOY_APP }} # p.ej. FrontendEcsApp
+      CODEDEPLOY_DG: ${{ secrets.CODEDEPLOY_DG }}   # p.ej. FrontendDeploymentGroup
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.GHA_OIDC_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build & Push image
+        run: |
+          IMAGE_URI=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}
+          docker build -t ${IMAGE_URI}:${GITHUB_SHA} .
+          docker push ${IMAGE_URI}:${GITHUB_SHA}
+          # opcional: actualizar latest también
+          docker tag ${IMAGE_URI}:${GITHUB_SHA} ${IMAGE_URI}:latest
+          docker push ${IMAGE_URI}:latest
+          echo "IMAGE_URI=${IMAGE_URI}:${GITHUB_SHA}" >> $GITHUB_ENV
+
+      - name: Get current task def of the service
+        id: current
+        run: |
+          TD_ARN=$(aws ecs describe-services --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --query 'services[0].taskDefinition' --output text)
+          echo "TD_ARN=$TD_ARN" >> $GITHUB_ENV
+          aws ecs describe-task-definition --task-definition "$TD_ARN" --query 'taskDefinition' > current-td.json
+
+      - name: Render taskdef.json from template
+        run: |
+          REGION=${AWS_REGION}
+          EXEC_ROLE=$(jq -r '.executionRoleArn' current-td.json)
+          TASK_ROLE=$(jq -r '.taskRoleArn' current-td.json)
+          LOG_GROUP=$(jq -r '.containerDefinitions[0].logConfiguration.options["awslogs-group"]' current-td.json)
+
+          sed -e "s#<IMAGE_URI>#${IMAGE_URI}#g" \
+              -e "s#<EXECUTION_ROLE_ARN>#${EXEC_ROLE}#g" \
+              -e "s#<TASK_ROLE_ARN>#${TASK_ROLE}#g" \
+              -e "s#<AWS_REGION>#${REGION}#g" \
+              -e "s#\"/ecs/frontend\"#\"${LOG_GROUP}\"#g" \
+              taskdef.json > taskdef.rendered.json
+
+          cat taskdef.rendered.json
+
+      - name: Register new task definition revision
+        run: |
+          NEW_TD_ARN=$(aws ecs register-task-definition --cli-input-json file://taskdef.rendered.json --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "NEW_TD_ARN=$NEW_TD_ARN" >> $GITHUB_ENV
+
+      - name: Render appspec.yaml with new task def
+        run: |
+          sed -e "s#<TASK_DEFINITION>#${NEW_TD_ARN}#g" appspec.yaml > appspec.rendered.yaml
+          echo "===== AppSpec ====="
+          cat appspec.rendered.yaml
+
+      - name: Create CodeDeploy deployment
+        run: |
+          aws deploy create-deployment \
+            --application-name "${CODEDEPLOY_APP}" \
+            --deployment-group-name "${CODEDEPLOY_DG}" \
+            --deployment-config-name CodeDeployDefault.ECSAllAtOnce \
+            --revision revisionType=AppSpecContent,appSpecContent="{fileContents='$(sed "s/\"/'/g" appspec.rendered.yaml)'}"

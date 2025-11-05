@@ -1,0 +1,15 @@
+version: 0.0
+Resources:
+  - TargetService:
+      Type: AWS::ECS::Service
+      Properties:
+        # Se rellena en el workflow con el ARN de la taskDefinition registrada
+        TaskDefinition: "<TASK_DEFINITION>"            # 🔁 (render en CI)
+        LoadBalancerInfo:
+          ContainerName: "FrontendContainer"           # Debe coincidir con CDK
+          ContainerPort: 3000
+Hooks:
+  BeforeInstall: []
+  AfterInstall: []
+  BeforeAllowTraffic: []
+  AfterAllowTraffic: []
