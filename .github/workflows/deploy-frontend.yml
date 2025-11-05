@@ -74,29 +74,27 @@ jobs:
           echo "===== AppSpec ====="
           cat appspec.rendered.yaml
 
-      - name: Create CodeDeploy deployment (safe JSON)
+      - name: Create CodeDeploy deployment (safe JSON via jq)
         run: |
-          # Genera un JSON que incluye el contenido del appspec YA ESCAPADO
-          cat > codedeploy.json <<'EOF'
-          {
-            "applicationName": "${CODEDEPLOY_APP}",
-            "deploymentGroupName": "${CODEDEPLOY_DG}",
-            "revision": {
-              "revisionType": "AppSpecContent",
-              "appSpecContent": {
-                "content": PLACEHOLDER_CONTENT
-              }
-            }
-          }
-          EOF
-      
-          # Reemplaza PLACEHOLDER_CONTENT por el contenido del appspec.rendered.yaml escapado a JSON
-          # (jq -Rs . convierte el archivo en un string JSON con los \n y comillas escapadas)
+          # Convierte el appspec.rendered.yaml a un string JSON escapado
           APPSPEC_JSON=$(jq -Rs . appspec.rendered.yaml)
-          sed -i "s#PLACEHOLDER_CONTENT#${APPSPEC_JSON//#/\\#}#g" codedeploy.json
-      
+
+          # Construye el payload final con jq (inyecta variables y el contenido escapado)
+          jq -n \
+            --arg app "$CODEDEPLOY_APP" \
+            --arg dg "$CODEDEPLOY_DG" \
+            --argjson content "$APPSPEC_JSON" \
+            '{
+              applicationName: $app,
+              deploymentGroupName: $dg,
+              revision: {
+                revisionType: "AppSpecContent",
+                appSpecContent: { content: $content }
+              }
+            }' > codedeploy.json
+
           echo "===== CodeDeploy request ====="
           cat codedeploy.json
-      
-          # Lanza el deployment con el JSON
+
+          # Ejecuta el deployment
           aws deploy create-deployment --cli-input-json file://codedeploy.json
