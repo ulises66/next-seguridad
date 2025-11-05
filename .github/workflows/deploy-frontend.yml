@@ -89,14 +89,14 @@ jobs:
             }
           }
           EOF
-
+      
           # Reemplaza PLACEHOLDER_CONTENT por el contenido del appspec.rendered.yaml escapado a JSON
           # (jq -Rs . convierte el archivo en un string JSON con los \n y comillas escapadas)
           APPSPEC_JSON=$(jq -Rs . appspec.rendered.yaml)
           sed -i "s#PLACEHOLDER_CONTENT#${APPSPEC_JSON//#/\\#}#g" codedeploy.json
-
+      
           echo "===== CodeDeploy request ====="
           cat codedeploy.json
-
+      
           # Lanza el deployment con el JSON
           aws deploy create-deployment --cli-input-json file://codedeploy.json
